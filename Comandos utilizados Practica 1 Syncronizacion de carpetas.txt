@@ -1,14 +1,65 @@
 Practica 1 Syncronizacion de carpetas con Rsync
 
+#Paso 1: Crear carpeta y archivos en el servidor primario
 
 mkdir -p /home/francisco1/sync_origen
 cd /home/francisco1/sync_origen
 touch archivo{1..100}.txt
+
+
+#Paso 2: Probar sincronización con rsync
+
 rsync -avz /home/francisco1/sync_origen/ root@192.168.X.X:/home/francisco1/sync_destino/
+
+
+#Paso 3: Crear script de sincronización
+#Archivo: sync_carpeta.sh
+
+nano /home/francisco1/sync_carpeta.sh
+
+#Contenido:
+
+#!/bin/bash
+rsync -avz /home/francisco1/sync_origen/ root@192.168.X.X:/home/francisco1/sync_destino/
+
+
+#Dar permisos de ejecución:
+chmod +x /home/francisco1/sync_carpeta.sh
+
+
+#Paso 4: Configurar sincronización automática con Crontab
 crontab -e
+
+#Agregar línea:
+
+* * * * * /home/francisco1/sync_carpeta.sh
+#Ejecutará el script cada minuto.
+
+
+#Paso 5: Crear archivo adicional para probar sincronización
+
+cd /home/francisco1/sync_origen
 touch nuevo.txt
-ls | grep archivo
-wc -l
+
+#Paso 6: Verificar archivos sincronizados en el servidor secundario
+
+ssh root@192.168.X.X
+ls /home/francisco1/sync_destino/ | grep archivo
+ls /home/francisco1/sync_destino/ | grep nuevo.txt
+wc -l /home/francisco1/sync_destino/*
+
+
+#Paso 7: Verificar servicio cron
+
 systemctl status cron
+
+
+#Paso 8: Revisar logs de sincronización
+
 grep rsync /var/log/syslog
+
+
+
+
+
 
