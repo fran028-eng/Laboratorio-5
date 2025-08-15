@@ -2,45 +2,191 @@ Practica 3: Cluster de Alta Disponibilidad HTTP
 
 
 
-sudo systemctl status nginx
-     apt install keepalived -y
-     echo '<h1>Hola desde nodo 1</h1>' | sudo tee /var/www/html/index.nginx-debian.html
-     nano /etc/keepalived/keepalived.conf
-     ping 10.0.0.100
-     sudo systemctl enable --now keepalived
-     ping 10.0.0.100
-     sudo systemctl status keepalived
-     ping 10.0.0.100
-     ip a
-     sudo ss -tuln | grep ':80'
-     sudo systemctl restart nginx
-     sudo nano /etc/nginx/sites-available/default
-     sudo systemctl restart nginx
-     sudo ss -tuln | grep ':8080'
-     sudo systemctl status nginx
-     sudo ss -tuln | grep 8080
-     ip a | grep 10.0.0.100
-     sudo grep -R "root " /etc/nginx/sites-available/default
-     echo '<h1>Hola desde nodo1 (puerto 8080)</h1>' | sudo tee /var/www/html/index.html
-     sudo systemctl restart nginx
-     curl http://localhost:8080
-     sudo rm /var/www/html/index.nginx-debian.html
-     sudo systemctl restart nginx
-     systemctl stop nginx
-     systemctl start nginx
-     sudo nano /etc/keepalived/keepalived.conf
-     sudo systemctl restart keepalived
-     sudo systemctl status keepalived
-     sudo journalctl -u keepalived -f
-     sudo iptables -L -v -n | grep 112
-     sudo nft list ruleset | grep 112
-     sudo ufw status verbose
-     sudo ufw enable
-     sudo ufw status verbose
-     sudo ufw allow proto 112
-     sudo ufw allow proto 112 from any to any
-     sudo iptables -I INPUT -p 112 -j ACCEPT
-     sudo iptables -I OUTPUT -p 112 -j ACCEPT
-     sudo ufw disable
-     systemctl stop nginx
-     reboot
+#1) Instalar paquetes en ambos nodos
+
+#En node1 y node2:
+
+sudo apt update
+sudo apt install -y nginx keepalived
+
+#Verifica versiones/status:
+nginx -v
+keepalived --version
+
+#2) Configurar páginas web en cada nodo
+
+#En node1:
+
+echo '<h1>Hola desde nodo1</h1>' | sudo tee /var/www/html/index.html
+sudo systemctl enable --now nginx
+
+#En node2:
+
+echo '<h1>Hola desde nodo2</h1>' | sudo tee /var/www/html/index.html
+sudo systemctl enable --now nginx
+
+
+#Verifica que Nginx responda localmente:
+curl -sS http://localhost | head -n 5
+
+
+#3) Configuración de Keepalived
+
+#Cambia INTERFACE por la interfaz real (ej. eth0, ens33, enp0s3).
+#Usa una contraseña fuerte en auth_pass.
+
+#keepalived.conf para node1 (MASTER, prioridad más alta):
+
+
+sudo tee /etc/keepalived/keepalived.conf > /dev/null <<'EOF'
+vrrp_script chk_nginx {
+    script "/usr/bin/pgrep nginx"
+    interval 2
+    weight 2
+}
+
+vrrp_instance VI_1 {
+    state MASTER
+    interface ens33
+    virtual_router_id 51
+    priority 100
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass Exxtremo11111
+    }
+    track_script {
+        chk_nginx
+    }
+    virtual_ipaddress {
+        10.0.0.100/24
+    }
+}
+EOF
+
+
+#keepalived.conf para node2 (BACKUP, prioridad menor)
+
+
+sudo tee /etc/keepalived/keepalived.conf > /dev/null <<'EOF'
+vrrp_script chk_nginx {
+    script "/usr/bin/pgrep nginx"
+    interval 2
+    weight 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface ens33
+    virtual_router_id 51
+    priority 90
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass Exxtremo11111
+    }
+    track_script {
+        chk_nginx
+    }
+    virtual_ipaddress {
+        10.0.0.100/24
+    }
+}
+EOF
+
+
+
+
+#4) Permisos, habilitar y arrancar Keepalived
+
+#En ambos nodos:
+
+sudo chmod 644 /etc/keepalived/keepalived.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now keepalived
+sudo systemctl status keepalived --no-pager
+
+
+#Revisa logs:
+
+sudo journalctl -u keepalived -n 200
+# o en tiempo real
+sudo journalctl -u keepalived -f
+
+
+#5) Verificar que la VIP está presente
+#En el nodo que sea MASTER (inmediatamente después de arrancar):
+
+
+ip addr show dev ens33 | grep 10.0.0.100 -n -A 2
+
+# o
+
+ip a | grep 10.0.0.100 -n -A 2
+
+#Desde otra máquina (o el mismo controlador) prueba:
+
+ping -c 3 10.0.0.100
+curl -sS http://10.0.0.100 | head -n 5
+
+
+#6) Probar failover (dos métodos)
+
+#Método A — detener keepalived en MASTER (node1):
+#En node1:
+
+sudo systemctl stop keepalived
+
+
+#En node2:
+
+ip a | grep 10.0.0.100 -n -A 2    # VIP debe aparecer aquí
+curl -sS http://10.0.0.100 | head -n 5  # ahora debe responder node2
+
+
+#7) Firewall: permitir protocolo VRRP (112) y HTTP (80)
+#Explicación breve: VRRP usa el protocolo IP número 112 (no TCP/UDP). Los firewalls por defecto con reglas TCP/UDP pueden bloquearlo. Aquí formas de permitirlo.
+
+#Opción (iptables temporal / inmediata) — en ambos nodos:
+
+
+sudo iptables -I INPUT -p 112 -j ACCEPT
+sudo iptables -I OUTPUT -p 112 -j ACCEPT
+sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+
+#Para persistir reglas (Debian/Ubuntu):
+
+sudo apt install -y iptables-persistent
+sudo netfilter-persistent save
+
+
+#Opción (nftables):
+
+sudo nft add rule inet filter input ip protocol 112 accept
+sudo nft add rule inet filter input tcp dport 80 accept
+# Guardar según tu distro (por ejemplo: sudo /usr/sbin/nft list ruleset > /etc/nftables.conf)
+
+
+#8) Comandos útiles de diagnóstico
+
+#Ver estado servicios:
+
+sudo systemctl status keepalived nginx
+
+
+#Logs keepalived:
+sudo journalctl -u keepalived -n 200
+
+#Ver reglas iptables:
+sudo iptables -L -v -n
+
+
+#Ver reglas nft:
+sudo nft list ruleset
+
+
+#Ver detalles VRRP (en logs/ journalctl) y en syslog:
+sudo grep -i keepalived /var/log/syslog
+
+
