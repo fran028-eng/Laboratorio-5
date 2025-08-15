@@ -1,18 +1,182 @@
 Practica 2 Instalacion y configuracion del Cluster
 
-sudo apt update
-sudo apt install heartbeat -y
+#Paso a paso detallado (Heartbeat)
+#0) Variables de ejemplo — cámbialas según tu entorno
 
-sudo nano /etc/ha.d/ha.cf
-sudo nano /etc/ha.d/haresources
-sudo nano /etc/ha.d/authkeys
+#NODO1:
+#Hostname: node1
+#IP física: 192.168.1.10
+
+#NODO2:
+
+#Hostname: node2
+#IP física: 192.168.1.11
+
+#IP flotante (VIP): 10.0.0.100/24
+
+#Interfaz de red usada para la VIP: eth0 (ajusta si tu interfaz es ens33, enp0s3, etc.)
+
+
+
+#1) Preparar hostnames y /etc/hosts (en ambos nodos)
+#En cada nodo edita /etc/hostname o usa hostnamectl set-hostname node1/node2. Luego añade entradas en /etc/hosts en ambos nodos:
+
+# en ambos nodos (ejecuta como root o con sudo)
+
+sudo tee -a /etc/hosts > /dev/null <<EOF
+192.168.1.10 node1
+192.168.1.11 node2
+EOF
+
+#Verifica:
+
+hostname
+ping -c 2 node2   # desde node1
+
+
+#2) Instalar heartbeat en ambos nodos
+
+sudo apt update
+sudo apt install -y heartbeat
+
+
+
+#3) Configurar /etc/ha.d/ha.cf (ambos nodos)
+
+#Edita con sudo nano /etc/ha.d/ha.cf y pega este contenido (ajusta bcast o ucast según tu red):
+#Opción A — broadcast (simple en LAN)
+
+
+logfacility local0
+keepalive 2
+deadtime 30
+warntime 10
+initdead 60
+udpport 694
+bcast ens33
+
+# auto-failback para devolver recursos al nodo preferido (opcional)
+auto_failback on
+
+# Nombres de los nodos (deben coincidir con hostname)
+node node1
+node node2
+
+
+
+#Opción B — unicast (si no quieres broadcast)
+#Si tu red no permite broadcast, reemplaza bcast ens33 por líneas ucast — debes añadir la IP del peer:
+
+#En node1:
+
+ucast ens33 192.168.1.11
+
+#En node2:
+ucast ens33 192.168.1.10
+
+
+
+
+#4) Configurar /etc/ha.d/authkeys (ambos nodos)
+#Crea el archivo con autenticación y una clave compartida. Mismo contenido en ambos nodos:
+
+
+sudo tee /etc/ha.d/authkeys > /dev/null <<'EOF'
+auth 1
+1 sha1 MiClaveSuperSecreta1234567890
+EOF
+
 sudo chmod 600 /etc/ha.d/authkeys
 
 
-sudo systemctl start heartbeat
-sudo systemctl enable heartbeat
+#5) Configurar /etc/ha.d/haresources (sólo en NODO1 — el nodo "preferido" inicial)
+#En node1 coloca la definición de los recursos (VIP y, si quieres, un servicio como apache):
+
+sudo tee /etc/ha.d/haresources > /dev/null <<'EOF'
+node1 IPaddr::10.0.0.100/24/eth0
+EOF
+
+
+
+#6) Iniciar y habilitar el servicio Heartbeat (ambos nodos)
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now heartbeat
 sudo systemctl status heartbeat
 
-ip a | grep 10.0.0.100
-ping 10.0.0.100
+
+#Comprueba que ambos nodos se ven entre sí:
+
+# en cualquiera de los nodos
+sudo tail -n 200 /var/log/syslog | grep -i heartbeat
+# o
+sudo journalctl -u heartbeat -f
+
+
+#7) Verificar la IP flotante (VIP)
+#En el nodo que tomó la IP deberías verla con ip a:
+
+ip a | grep 10.0.0.100 -n -A 3
+# o simplemente
+ip addr show dev ens33
+
+
+#Desde cualquier otra máquina (o desde tu controlador) prueba:
+ping -c 4 10.0.0.100
+
+
+
+#8) Pruebas de failover (lo más importante)
+#Prueba básica 1 — parar heartbeat en node1
+
+#En node1 (el que tiene la VIP actualmente):
+
 sudo systemctl stop heartbeat
+
+
+#En node2 comprueba:
+
+ip a | grep 10.0.0.100    # la VIP debe aparecer ahora en node2
+ping -c 4 10.0.0.100      # desde otra máquina
+sudo journalctl -u heartbeat -f
+
+
+#Prueba básica 2 — reiniciar node2 y volver a node1
+
+#En node2:
+sudo systemctl stop heartbeat
+
+#Vuelve a node1 y arranca de nuevo:
+sudo systemctl start heartbeat
+
+
+#9) Ver logs y diagnosticar problemas
+
+#Logs principales: /var/log/syslog (grep ‘heartbeat’), o journalctl -u heartbeat.
+#Buscar errores de autenticación (authkeys), de interfaz o permisos.
+
+
+#Comandos útiles:
+
+sudo tail -n 100 /var/log/syslog | grep -i heartbeat
+sudo journalctl -u heartbeat --since "5 minutes ago"
+ip addr show eth0
+
+
+
+#10) Parar el cluster (cuando termines)
+
+sudo systemctl stop heartbeat
+sudo systemctl disable heartbeat
+
+
+
+
+
+
+
+
+
+
+
+
